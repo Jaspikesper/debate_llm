@@ -1,6 +1,6 @@
 from urllib.request import urlretrieve
 import pandas as pd
-from Tokenization.tokenizer import *
+from Encoding.tokenizer import *
 rawtext_link = 'https://www.gutenberg.org/ebooks/26184.txt.utf-8'
 urlretrieve(rawtext_link, '../my_text.txt')
 
