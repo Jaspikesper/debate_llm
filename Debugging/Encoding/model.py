@@ -1,106 +1,100 @@
 import torch
-from tokenizer import BytePairTokenizer
-from data_loader import GPT_Dataset, make_dataloader
+from model import *
+from Debugging.Encoding.model import MaskedSelfAttention
+from tokenizer import BytePairTokenizer, TikToken4o
 import math
+from tokenizer import BytePairTokenizer
 
-with open('byte_training/LLM_dataset.txt', 'r', encoding='utf-8') as f:
-    data = f.read()
-t = BytePairTokenizer(vocab_file='byte_training/tok.json')
-
-# Hyperparameters for embedding matrix
-vocab_size = max(t.vocab.values()) + 2
-h_dim = 3
-
-# Parameters for dataloader
-shuffle = False
-drop_last = False
-num_workers = 0
-batch_size = 4
-stride = 1
+# Data hyperparameters
+h_dim = 18
 max_length = 6
 
-# Initialize embedder, dataset, and most importantly data loader
+# Initialize tokenizer and embedding layer
+tokenizer = BytePairTokenizer(vocab_file='byte_training/tok.json')
+vocab_size = max(tokenizer.vocab.values()) + 2
 embedding_layer = torch.nn.Embedding(vocab_size, h_dim, padding_idx=0)
-dataset = GPT_Dataset(data, t, max_length=max_length, stride=stride)
-data_loader = make_dataloader(dataset, shuffle=shuffle, drop_last=drop_last, num_workers=num_workers, batch_size=batch_size)
 
-inputs, targets = next(iter(data_loader))
-max_token_id = inputs.max().item()
-if max_token_id >= vocab_size:
-    print(f"ERROR: Max token ID ({max_token_id}) >= vocab_size ({vocab_size})")
-    print("This will cause an IndexError!")
-
-def display_task():
-    print("Displaying the sequence task!")
-    print("Decoded Inputs:")
-    for seq in inputs:
-        print(t.decode(seq.tolist()))
-
-    print("\nDecoded Targets:")
-    for seq in targets:
-        print(t.decode(seq.tolist()))
-
-display_task()
-
+# Positional Encoding
 class PositionalEncoding(torch.nn.Module):
     def __init__(self, max_length, h_dim):
         super().__init__()
         self.pos_embedding = torch.nn.Embedding(max_length, h_dim)
 
     def forward(self, x):
-        # x shape: (batch_size, seq_length)
-        positions = torch.arange(x.size(1), device=x.device).unsqueeze(0).expand_as(x)
-        pos_emb = self.pos_embedding(positions)
-        return pos_emb
+        # x: (batch_size, seq_length)
+        seq_length = x.size(1)
+        positions = torch.arange(seq_length, device=x.device).unsqueeze(0).expand_as(x)
+        return self.pos_embedding(positions)
 
-class Encoding(torch.nn.Module):  # The model's positional embedding module
-    def __init__(self, embedding_layer, positional_encoding):
+# Encoding Module (Embeddings + PositionalEncoding)
+class Encoding(torch.nn.Module):
+    def __init__(self, embedding_layer, pos_encoding):
         super().__init__()
         self.embedding = embedding_layer
-        self.pos_encoding = positional_encoding
+        self.pos_encoding = pos_encoding
 
     def forward(self, x):
-        x = self.embedding(x)  # Shape: (batch_size, seq_length, h_dim)
-        x = x + self.pos_encoding(x.argmax(dim=-1))  # Passing x's token indices to pos_encoding to get pos embeddings
-        return x
+        embeds = self.embedding(x)
+        pos_embeds = self.pos_encoding(x)
+        return embeds + pos_embeds
 
+# Masked Self Attention
 class MaskedSelfAttention(torch.nn.Module):
-    def __init__(self, h_dim, qkv_bias=True):
+    def __init__(self, d_in, d_out, context_length, dropout=0.5, qkv_bias=True):
         super().__init__()
-        self.W_q = torch.nn.Linear(h_dim, h_dim, bias=qkv_bias)
-        self.W_k = torch.nn.Linear(h_dim, h_dim, bias=qkv_bias)
-        self.W_v = torch.nn.Linear(h_dim, h_dim, bias=qkv_bias)
-        self.scale = 1/math.sqrt(h_dim)
-
-    def mask(self, A):
-        one = torch.ones_like(A)
-        triu = 1-torch.tril(one) # Diagonal is zero
-        mask = triu * -9999
-        masked = mask + A
-        return masked
+        self.W_q = torch.nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_k = torch.nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.W_v = torch.nn.Linear(d_in, d_out, bias=qkv_bias)
+        self.scale = 1 / math.sqrt(d_out)
+        self.dropout = torch.nn.Dropout(p=dropout)
+        self.register_buffer('mask', torch.triu(torch.ones(context_length, context_length)) * -1e9)
 
     def forward(self, x):
         queries = self.W_q(x)
         keys = self.W_k(x)
         values = self.W_v(x)
-        z = torch.nn.functional.softmax(
-            self.mask(queries @ keys.transpose(-2, -1)) * self.scale,
-            dim=1
-        ) @ values
-
+        attn_scores = (queries @ keys.transpose(-2, -1)) * self.scale
+        seq_len = x.size(1)
+        mask = self.mask[:seq_len, :seq_len]
+        attn_scores = attn_scores + mask
+        attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
+        z = attn_weights @ values
+        z = self.dropout(z)
         return z
 
+# Example input
+phrase = 'to pimp a '
+tokens = tokenizer.encode(phrase)
+input_tensor = torch.tensor(tokens).unsqueeze(0)  # (1, seq_length)
 
+# Initialize abstract layers
+pos_encoding_layer = PositionalEncoding(max_length=max_length, h_dim=h_dim)
+encoding_layer = Encoding(embedding_layer, pos_encoding_layer)
+d_out = 16
+attention_layer = MaskedSelfAttention(d_in=h_dim, d_out=d_out, context_length=max_length)
 
-pos_encoding_layer = PositionalEncoding(max_length, h_dim)
-encoding_module = Encoding(embedding_layer, pos_encoding_layer)
+# Call them in order
+embedded_with_pos = encoding_layer(input_tensor)
+context = attention_layer(embedded_with_pos)
 
-# Example test forward pass
-encoded = encoding_module(inputs)  # shape should be (batch_size, seq_length, h_dim)
-print(f'Encoded output shape: {encoded.shape}')
-self_attention_layer = MaskedSelfAttention(h_dim=h_dim)
-context = self_attention_layer(encoded)
-encoded += context # Encoded pays attention to its context.
+print("Output shape (context):", context.shape)
 
+class MyStackedFunction(torch.nn.Module):
+    def __init__(self, module_cls, N, *args, **kwargs):
+        super().__init__()
+        self.modules_list = torch.nn.ModuleList([module_cls(*args, **kwargs) for _ in range(N)])
 
+    def forward(self, x):
+        outputs = [mod(x) for mod in self.modules_list]
+        return torch.stack(outputs, dim=0).squeeze()
 
+num_heads = 12
+StackedAttention = MyStackedFunction(
+    MaskedSelfAttention,
+    num_heads,
+    h_dim,
+    d_out,
+    max_length,
+    dropout=0.5,
+    qkv_bias=True
+)
