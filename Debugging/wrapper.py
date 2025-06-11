@@ -46,7 +46,7 @@ if __name__ == '__main__':
         user_prompt = input("What is your question for ChatGPT? \n")
 
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
