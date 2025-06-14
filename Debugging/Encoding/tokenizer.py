@@ -27,7 +27,8 @@ class BytePairTokenizer:
         # Initialize vocab with special tokens
         self.vocab = {
             '<|endoftext|>': 50256,
-            '<|unknown|>': 50257,  # Added unknown token
+            '<|unknown|>': 50257,
+            '<|pad|>': 50258
         }
         self.inverse_vocab = {v: k for k, v in self.vocab.items()}
         self.target_vocab_size = target_vocab_size
@@ -48,7 +49,7 @@ class BytePairTokenizer:
             self.load(self.vocab_file)
         else:
             self.update_vocab(self.training_corpus)
-
+        print(self.target_vocab_size)
         if self.target_vocab_size and len(self.vocab) < self.target_vocab_size:
             self.train(self.training_corpus)
 
