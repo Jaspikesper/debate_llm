@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import math
 from tokenizer import BytePairTokenizer
+from model_config import GPT_CONFIG_124M
+
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -31,12 +33,12 @@ class Encoding(nn.Module):
         return embeds + pos_embeds
 
 class MaskedSelfAttention(nn.Module):
-    def __init__(self, d_in: int, d_out: int, context_length: int, dropout: float = 0.1, qkv_bias: bool = False):
+    def __init__(self, d_in: int, attn_dim: int, context_length: int, dropout: float = 0.1, qkv_bias: bool = False):
         super().__init__()
-        self.W_q = nn.Linear(d_in, d_out, bias=qkv_bias)
-        self.W_k = nn.Linear(d_in, d_out, bias=qkv_bias)
-        self.W_v = nn.Linear(d_in, d_out, bias=qkv_bias)
-        self.d_out = d_out
+        self.W_q = nn.Linear(d_in, attn_dim, bias=qkv_bias)
+        self.W_k = nn.Linear(d_in, attn_dim, bias=qkv_bias)
+        self.W_v = nn.Linear(d_in, attn_dim, bias=qkv_bias)
+        self.attn_dim = attn_dim
         self.dropout = nn.Dropout(dropout)
         self.register_buffer('mask', torch.triu(torch.ones(context_length, context_length), diagonal=1))
 
@@ -110,10 +112,10 @@ def create_token_tensor(phrases: list, tokenizer: BytePairTokenizer, max_length:
     return torch.tensor(batch_tokens, dtype=torch.long)
 
 if __name__ == '__main__':
-    h_dim = 18
-    max_length = 3
-    num_heads = 7
-    d_out = 16
+    h_dim = GPT_CONFIG_124M['h_dim']
+    attn_dim = GPT_CONFIG_124M['attn_dim']
+    num_heads = GPT_CONFIG_124M['num_heads']
+    max_length = GPT_CONFIG_124M['context_length']
 
     vocab_path = os.path.join(os.path.dirname(__file__), 'byte_training', 'tok.json')
     tokenizer = BytePairTokenizer(vocab_file=vocab_path)
@@ -123,8 +125,9 @@ if __name__ == '__main__':
     pos_encoding_layer = PositionalEncoding(max_length, h_dim)
     encoding_layer = Encoding(embedding_layer, pos_encoding_layer)
     stacked_attention = MyStackedFunction(
-        MaskedSelfAttention, num_heads, h_dim, d_out, max_length, dropout=0.1)
+        MaskedSelfAttention, num_heads, h_dim, attn_dim, max_length, dropout=0.1)
 
+    # only test if a "test=True" argument is passed, otherwise do nothing. Use model.test to run the tests.
     print("Running batch size validation test...")
     phrases = ['to pimp a butterfly', 'keep it moving forward', 'it is okay to be gay', 'money is not everything']
     input_ids = create_token_tensor(phrases, tokenizer, max_length)
@@ -132,7 +135,7 @@ if __name__ == '__main__':
     encoded_sequences = encoding_layer(input_ids)
     context, weights = stacked_attention(encoded_sequences)
 
-    assert context.shape == (len(phrases), 1, max_length, d_out)
+    assert context.shape == (len(phrases), 1, max_length, attn_dim)
     assert weights.shape == (len(phrases), num_heads, max_length, max_length)
     print("✅ Batch size validation test passed.")
     print("-" * 20)
