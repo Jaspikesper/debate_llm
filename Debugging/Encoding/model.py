@@ -32,34 +32,50 @@ class Encoding(nn.Module):
         pos_embeds = self.pos_encoding(x)
         return embeds + pos_embeds
 
+python
 class MaskedSelfAttention(nn.Module):
     def __init__(self, d_in: int, attn_dim: int, context_length: int, dropout: float = 0.1, qkv_bias: bool = False):
         super().__init__()
-        self.W_q = nn.Linear(d_in, attn_dim, bias=qkv_bias)
-        self.W_k = nn.Linear(d_in, attn_dim, bias=qkv_bias)
-        self.W_v = nn.Linear(d_in, attn_dim, bias=qkv_bias)
+        self.proj = nn.Linear(d_in, 3 * attn_dim, bias=qkv_bias)
         self.attn_dim = attn_dim
         self.dropout = nn.Dropout(dropout)
         self.register_buffer('mask', torch.triu(torch.ones(context_length, context_length), diagonal=1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        queries = self.W_q(x)
-        keys = self.W_k(x)
-        values = self.W_v(x)
-        attn_scores = queries @ keys.transpose(-2, -1) / math.sqrt(keys.size(-1))
+        qkv = self.proj(x)
+        q, k, v = qkv.split(self.attn_dim, dim=-1)
+        attn_scores = q @ k.transpose(-2, -1) / math.sqrt(k.size(-1))
         attn_scores.masked_fill_(self.mask.bool()[:x.size(1), :x.size(1)], -torch.inf)
         attn_weights = nn.functional.softmax(attn_scores, dim=-1)
-        context_vec = self.dropout(attn_weights) @ values
+        context_vec = self.dropout(attn_weights) @ v
         return context_vec, attn_scores
 
-
 class MyStackedFunction(nn.Module):
-    def __init__(self, module_cls, N: int, *args, **kwargs):
+    def __init__(self, module_cls, N: int, d_in: int, attn_dim: int, context_length: int, dropout: float = 0.1, qkv_bias: bool = False):
         super().__init__()
-        self.modules_list = nn.ModuleList([module_cls(*args, **kwargs) for _ in range(N)])
         self.linear = None
         self.N = N
+        self.q = nn.Linear(d_in, attn_dim, bias=qkv_bias)
+        self.k = nn.Linear(d_in, attn_dim, bias=qkv_bias)
+        self.v = nn.Linear(d_in, attn_dim, bias=qkv_bias)
+        self.modules_list = nn.ModuleList([
+            module_cls(self.q, self.k, self.v, d_in, attn_dim, context_length, dropout=dropout, qkv_bias=qkv_bias)
+            for _ in range(N)
+        ])
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        outputs_z, outputs_weights = zip(*[mod(x) for mod in self.modules_list])
+        stacked_z = torch.stack(outputs_z, dim=1)
+        stacked_weights = torch.stack(outputs_weights, dim=1)
+        B = stacked_z.shape[0]
+        stacked_z_flat = stacked_z.flatten(start_dim=1)
+        if self.linear is None:
+            in_features = stacked_z_flat.shape[1]
+            out_features = stacked_z.shape[-2] * stacked_z.shape[-1]
+            self.linear = nn.Linear(in_features, out_features)
+        y = self.linear(stacked_z_flat)
+        y = y.reshape(stacked_z.shape[0], 1, stacked_z.shape[-2], stacked_z.shape[-1])
+        return y, stacked_weights
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         outputs_z, outputs_weights = zip(*[mod(x) for mod in self.modules_list])
         stacked_z = torch.stack(outputs_z, dim=1)  # shape: (B, N, ...)
@@ -111,21 +127,33 @@ def create_token_tensor(phrases: list, tokenizer: BytePairTokenizer, max_length:
         batch_tokens.append(tokens)
     return torch.tensor(batch_tokens, dtype=torch.long)
 
+h_dim = GPT_CONFIG_124M['h_dim']
+attn_dim = GPT_CONFIG_124M['attn_dim']
+num_heads = GPT_CONFIG_124M['num_heads']
+max_length = GPT_CONFIG_124M['context_length']
+vocab_path = os.path.join(os.path.dirname(__file__), 'byte_training', 'tok.json')
+token_params = GPT_CONFIG_124M['tokenizer']
+qkv_bias = token_params.get('qkv_bias', False)
+tokenizer = BytePairTokenizer()
+
+vocab_size = max(tokenizer.vocab.values()) + 2
+embedding_layer = nn.Embedding(vocab_size, h_dim, padding_idx=0)
+pos_encoding_layer = PositionalEncoding(max_length, h_dim)
+encoding_layer = Encoding(embedding_layer, pos_encoding_layer)
+stacked_attention = MyStackedFunction(
+    MaskedSelfAttention, num_heads, h_dim, attn_dim, max_length, dropout=0.1, qkv_bias=qkv_bias)
+
+class attention_block(nn.Module):
+    def __init__(self, num_heads: int, h_dim: int, attn_dim: int, max_length: int, dropout: float = 0.1, qkv_bias: bool = False):
+        super().__init__()
+        self.attention_and_linear = MyStackedFunction(
+            MaskedSelfAttention, num_heads, h_dim, attn_dim, max_length, dropout=dropout, qkv_bias=qkv_bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.attention_and_linear(x)
+
 if __name__ == '__main__':
-    h_dim = GPT_CONFIG_124M['h_dim']
-    attn_dim = GPT_CONFIG_124M['attn_dim']
-    num_heads = GPT_CONFIG_124M['num_heads']
-    max_length = GPT_CONFIG_124M['context_length']
 
-    vocab_path = os.path.join(os.path.dirname(__file__), 'byte_training', 'tok.json')
-    tokenizer = BytePairTokenizer(vocab_file=vocab_path)
-
-    vocab_size = max(tokenizer.vocab.values()) + 2
-    embedding_layer = nn.Embedding(vocab_size, h_dim, padding_idx=0)
-    pos_encoding_layer = PositionalEncoding(max_length, h_dim)
-    encoding_layer = Encoding(embedding_layer, pos_encoding_layer)
-    stacked_attention = MyStackedFunction(
-        MaskedSelfAttention, num_heads, h_dim, attn_dim, max_length, dropout=0.1)
 
     # only test if a "test=True" argument is passed, otherwise do nothing. Use model.test to run the tests.
     print("Running batch size validation test...")

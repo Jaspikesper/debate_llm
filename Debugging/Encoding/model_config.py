@@ -1,12 +1,18 @@
 GPT_CONFIG_124M = {
 
-    "vocab_size": 50257,
-    "context_length": 1024,
-    "h_dim": 768,
-    "attn_dim": 768,
-    "num_heads": 12,
-    "num_layers": 12,
+"vocab_size": 10000,
+    "context_length": 7,
+    "h_dim": 128,
+    "attn_dim": 128,
+    "num_heads": 4,
+    "num_layers": 4,
     "dropout_rate": 0.1,
     "activation_function": "gelu",
-    "attn_bias": False
+    "attn_bias": False,
+    "tokenizer": {
+        "type": "BytePairTokenizer",
+        "target_vocab_size": 100000,
+        "vocab_file": "tok.json",
+    }
+
 }

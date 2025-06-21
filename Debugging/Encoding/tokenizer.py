@@ -33,7 +33,7 @@ class BytePairTokenizer:
         self.inverse_vocab = {v: k for k, v in self.vocab.items()}
         self.target_vocab_size = target_vocab_size
 
-        # Pattern to tokenize similar to GPT-2
+        # Pattern like GPT-2
         self.gpt2pattern = regex.compile(
             r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
         )
@@ -43,19 +43,18 @@ class BytePairTokenizer:
         self.sorted_keys = sorted(self.vocab.keys(), key=lambda x: -len(x))
         self._build_prefix_index()
 
-        # Load pre-existing vocabulary if available
+        # If vocab file exists, load it; otherwise, train the tokenizer from scratch
         print(self.vocab_file)
         if os.path.exists(self.vocab_file):
             self.load(self.vocab_file)
         else:
             self.update_vocab(self.training_corpus)
-        print(self.target_vocab_size)
         if self.target_vocab_size and len(self.vocab) < self.target_vocab_size:
             self.train(self.training_corpus)
 
         self.vocab_size = len(self.vocab)
 
-    # Build prefix index for efficient token lookup
+    # Internal prefix builder
     def _build_prefix_index(self):
         self.prefix_index = defaultdict(list)
         for tok in self.vocab:
