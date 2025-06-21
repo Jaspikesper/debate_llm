@@ -96,11 +96,17 @@ class MyStackedFunction(nn.Module):
         return y, stacked_weights
 
 
-class MultiHeadedAttention(nn.Module):
-    #1: initialize a list of MaskedSelfAttention modules
-    #2: Take the for each of Q K and V, stack the respective matrices along the batch dimension
-    #3: perform multi-headed attention on the batched input to get stacked context
-    pass
+class DummyTransformerBlock(nn.Module):  # 3
+    def __init__(self, cfg):
+        super().__init__()
+        pass
+
+class DummyLayerNorm(nn.Module):  # 5
+    def __init__(self, normalized_shape, eps=1e-5):  # 6
+        super().__init__()
+
+    def forward(self, x):
+        return x
 
 def visualize_attention(tokens: list, attn_weights: torch.Tensor, head_idx: int):
     attn_weights = attn_weights.cpu().detach().numpy()
