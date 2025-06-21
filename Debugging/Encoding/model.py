@@ -32,7 +32,7 @@ class Encoding(nn.Module):
         pos_embeds = self.pos_encoding(x)
         return embeds + pos_embeds
 
-python
+
 class MaskedSelfAttention(nn.Module):
     def __init__(self, d_in: int, attn_dim: int, context_length: int, dropout: float = 0.1, qkv_bias: bool = False):
         super().__init__()
