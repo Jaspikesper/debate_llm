@@ -13,6 +13,7 @@ GPT_CONFIG_124M = {
         "type": "BytePairTokenizer",
         "target_vocab_size": 100000,
         "vocab_file": "tok.json",
-    }
+    },
+    "batch_size": 2
 
 }

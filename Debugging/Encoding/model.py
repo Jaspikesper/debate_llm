@@ -3,6 +3,8 @@ import sys
 import torch
 import torch.nn as nn
 import math
+
+from Debugging.Encoding.tokenizer import TikToken200k
 from tokenizer import BytePairTokenizer
 from model_config import GPT_CONFIG_124M
 
@@ -59,7 +61,7 @@ class MyStackedFunction(nn.Module):
         self.k = nn.Linear(d_in, attn_dim, bias=qkv_bias)
         self.v = nn.Linear(d_in, attn_dim, bias=qkv_bias)
         self.modules_list = nn.ModuleList([
-            module_cls(self.q, self.k, self.v, d_in, attn_dim, context_length, dropout=dropout, qkv_bias=qkv_bias)
+            module_cls(d_in, attn_dim, context_length, dropout=dropout, qkv_bias=qkv_bias)
             for _ in range(N)
         ])
 
@@ -123,14 +125,12 @@ def visualize_attention(tokens: list, attn_weights: torch.Tensor, head_idx: int)
             score = attn_weights[i, j]
             row_str += f"{score:^{col_width}.2f}"
         print(row_str)
-    print()
 
-def create_token_tensor(phrases: list, tokenizer: BytePairTokenizer, max_length: int) -> torch.Tensor:
-    batch_tokens = []
-    for phrase in phrases:
-        tokens = tokenizer.encode(phrase)
-        tokens = tokens[:max_length] if len(tokens) > max_length else tokens + [0] * (max_length - len(tokens))
-        batch_tokens.append(tokens)
+def batch_encode(phrases, tokenizer, max_length):
+    batch_tokens = [
+        (tokens := tokenizer.encode(phrase))[:max_length] + [0] * (max_length - len(tokens))
+        for phrase in phrases
+    ]
     return torch.tensor(batch_tokens, dtype=torch.long)
 
 h_dim = GPT_CONFIG_124M['h_dim']
@@ -140,9 +140,12 @@ max_length = GPT_CONFIG_124M['context_length']
 vocab_path = os.path.join(os.path.dirname(__file__), 'byte_training', 'tok.json')
 token_params = GPT_CONFIG_124M['tokenizer']
 qkv_bias = token_params.get('qkv_bias', False)
-tokenizer = BytePairTokenizer()
+#tokenizer = BytePairTokenizer()
+tokenizer = TikToken200k
 
-vocab_size = max(tokenizer.vocab.values()) + 2
+
+#vocab_size = max(tokenizer.vocab.values()) + 2
+vocab_size = tokenizer.n_vocab
 embedding_layer = nn.Embedding(vocab_size, h_dim, padding_idx=0)
 pos_encoding_layer = PositionalEncoding(max_length, h_dim)
 encoding_layer = Encoding(embedding_layer, pos_encoding_layer)
@@ -159,43 +162,54 @@ class attention_block(nn.Module):
         return self.attention_and_linear(x)
 
 if __name__ == '__main__':
-
-
     # only test if a "test=True" argument is passed, otherwise do nothing. Use model.test to run the tests.
     print("Running batch size validation test...")
-    phrases = ['to pimp a butterfly', 'keep it moving forward', 'it is okay to be gay', 'money is not everything']
-    input_ids = create_token_tensor(phrases, tokenizer, max_length)
+    phrases = ['to pimp a butterfly', 'keep it moving forward']  # Only 2 phrases to match batch_size=2
+    input_ids = batch_encode(phrases, tokenizer, max_length)  # (batch_size, seq_len)
 
-    encoded_sequences = encoding_layer(input_ids)
+    assert input_ids.shape[0] == len(phrases) == 2  # batch_size first
+    assert input_ids.shape[1] == max_length
+
+    encoded_sequences = encoding_layer(input_ids)  # (batch_size, seq_len, h_dim)
+    assert encoded_sequences.shape[0] == 2
+    assert encoded_sequences.shape[1] == max_length
+
     context, weights = stacked_attention(encoded_sequences)
-
-    assert context.shape == (len(phrases), 1, max_length, attn_dim)
-    assert weights.shape == (len(phrases), num_heads, max_length, max_length)
+    # context: (batch_size, 1, seq_len, attn_dim)
+    # weights: (batch_size, num_heads, seq_len, seq_len)
+    assert context.shape == (2, 1, max_length, attn_dim)
+    assert weights.shape == (2, num_heads, max_length, max_length)
     print("✅ Batch size validation test passed.")
     print("-" * 20)
 
     print("\nRunning attention visualization test...")
-    phrase = ['Abraham Lincoln']
-    input_tensor = create_token_tensor(phrase, tokenizer, max_length)
-    encoded_single_sequence = encoding_layer(input_tensor)
+    phrase = ['Abraham Lincoln', 'George Washington']  # batch_size=2
+    input_tensor = batch_encode(phrase, tokenizer, max_length)  # (2, seq_len)
+    assert input_tensor.shape[0] == 2
+    encoded_single_sequence = encoding_layer(input_tensor)  # (2, seq_len, h_dim)
+    assert encoded_single_sequence.shape[0] == 2
     context_1, weights_1 = stacked_attention(encoded_single_sequence)
+    assert context_1.shape[0] == 2
+    assert weights_1.shape[0] == 2
 
-    token_ids = input_tensor[0].tolist()
-    string_tokens = [tokenizer.decode([i]) if i != 0 else "[PAD]" for i in token_ids]
-
-    head_to_show = 2
-    single_head_weights = weights_1[0, head_to_show, :, :]
-
-    visualize_attention(
-        tokens=string_tokens,
-        attn_weights=single_head_weights,
-        head_idx=head_to_show
-    )
+    for i in range(2):
+        token_ids = input_tensor[i].tolist()
+        string_tokens = [tokenizer.decode([j]) if j != 0 else "[PAD]" for j in token_ids]
+        head_to_show = 2
+        single_head_weights = weights_1[i, head_to_show, :, :]
+        print(f"\nPhrase {i+1} visualization:")
+        visualize_attention(
+            tokens=string_tokens,
+            attn_weights=single_head_weights,
+            head_idx=head_to_show
+        )
     print("✅ Attention visualization test finished.")
 
+    # Single example, ensure batch dim is first
     phrase = 'Abraham Lincoln'
     ids = tokenizer.encode(phrase)
     while len(ids) < max_length:
         ids.append(50258)
-    emb = encoding_layer(torch.tensor(ids).reshape(1, -1))
+    emb = encoding_layer(torch.tensor(ids).reshape(1, -1))  # (1, seq_len)
+    assert emb.shape[0] == 1
     context = stacked_attention(emb)[0]

@@ -1,6 +1,7 @@
 import torch
 from tokenizer import BytePairTokenizer
 from torch.utils.data import DataLoader, Dataset
+import model_config
 
 class GPT_Dataset(Dataset): # Dataset of sequence/prediction pairs for a given text
 
@@ -23,7 +24,9 @@ class GPT_Dataset(Dataset): # Dataset of sequence/prediction pairs for a given t
         return torch.tensor(self.input_ids[idx], dtype=torch.long), torch.tensor(self.output_ids[idx],
                                                                                  dtype=torch.long)
 
-def make_dataloader(dataset, shuffle=False, drop_last=False, num_workers=0, batch_size=6): # Inserts default parameters for Torch dataloader
+def make_dataloader(dataset, shuffle=False, drop_last=False, num_workers=0, batch_size=None): # Inserts default parameters for Torch dataloader
+    if batch_size is None:
+        batch_size = model_config.GPT_CONFIG_124M["batch_size"]
     dataloader = DataLoader(
         dataset=dataset,
         shuffle=shuffle,
